@@ -246,6 +246,20 @@ body{font-family:"Noto Sans TC",sans-serif;background:var(--bg);color:var(--t1);
 .user-badge{display:flex;align-items:center;gap:8px;padding:4px 10px 4px 4px;border-radius:20px;background:var(--bg3);cursor:pointer;border:1px solid var(--bd);font-size:11.5px;color:var(--t2)}
 .user-badge img{width:24px;height:24px;border-radius:50%;object-fit:cover}
 .user-badge:hover{background:var(--bg4)}
+/* 帳號管理 */
+.admin-add-row{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.admin-add-row input{flex:1;min-width:200px;padding:7px 12px;border:1px solid var(--bd2);border-radius:6px;font-size:12px;font-family:"Noto Sans TC",sans-serif;color:var(--t1)}
+.admin-add-row input:focus{outline:none;border-color:var(--ac)}
+.admin-add-row select{padding:7px 10px;border:1px solid var(--bd2);border-radius:6px;font-size:12px;font-family:"Noto Sans TC",sans-serif;color:var(--t1)}
+.admin-table{width:100%;border-collapse:collapse;font-size:12px}
+.admin-table th{text-align:left;padding:8px 10px;border-bottom:2px solid var(--bd2);font-size:10.5px;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.admin-table td{padding:8px 10px;border-bottom:1px solid var(--bd);color:var(--t2)}
+.admin-table tr:hover td{background:var(--bg3)}
+.admin-table .role-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600}
+.admin-table .role-admin{background:rgba(195,240,0,.15);color:#6B8F00}
+.admin-table .role-user{background:var(--bg3);color:var(--t3)}
+.btn-danger{background:transparent;color:var(--rd);border:1px solid rgba(220,38,38,.2);padding:3px 10px;border-radius:5px;font-size:11px;cursor:pointer;font-family:"Noto Sans TC",sans-serif}
+.btn-danger:hover{background:rgba(220,38,38,.08)}
 </style>
 <!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -319,6 +333,12 @@ body{font-family:"Noto Sans TC",sans-serif;background:var(--bg);color:var(--t1);
     </label>
     <input type="file" id="fi0" accept=".xlsx,.xls" style="display:none" onchange="handleFile(0,this)">
     <input type="file" id="fi1" accept=".xlsx,.xls" style="display:none" onchange="handleFile(1,this)">
+    <div id="navAdminSection" style="display:none">
+      <div class="nav-label" style="margin-top:10px">管理</div>
+      <div class="nav-item" id="navAdmin" onclick="switchNav('admin',this)">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 2.5-5 6-5s6 2 6 5"/></svg>帳號管理
+      </div>
+    </div>
   </nav>
   <div class="year-list" id="yearList">
     <div class="year-label">年度</div>
@@ -459,6 +479,30 @@ body{font-family:"Noto Sans TC",sans-serif;background:var(--bg);color:var(--t1);
         <div class="card"><div class="card-header"><div class="card-title">成本率年度比較</div></div><div style="position:relative;height:190px"><canvas id="costRateChart"></canvas></div></div>
       </div>
     </div>
+
+    <!-- 帳號管理頁面 -->
+    <div id="view-admin" style="display:none">
+      <div class="card">
+        <div class="card-header">
+          <div><div class="card-title">帳號白名單管理</div><div class="card-subtitle">管理可登入此系統的帳號</div></div>
+        </div>
+        <div class="admin-add-row">
+          <input type="email" id="addEmailInput" placeholder="輸入 Email（例：name@company.com）">
+          <select id="addRoleSelect">
+            <option value="user">一般用戶</option>
+            <option value="admin">管理員</option>
+          </select>
+          <button class="btn btn-primary" onclick="addWhitelistUser()">新增</button>
+        </div>
+        <div id="addEmailError" style="color:var(--rd);font-size:11px;min-height:16px;margin-bottom:8px"></div>
+        <table class="admin-table" id="whitelistTable">
+          <thead><tr><th>Email</th><th>角色</th><th>加入時間</th><th>操作</th></tr></thead>
+          <tbody id="whitelistBody"></tbody>
+        </table>
+        <div id="whitelistEmpty" style="text-align:center;padding:30px;color:var(--t3);font-size:12px;display:none">目前沒有白名單資料</div>
+      </div>
+    </div>
+
   </div>
 </div>
 </div>
@@ -554,6 +598,8 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 const WHITELIST_COLLECTION = 'report-whitelist';
+let currentUserEmail = null;
+let isAdmin = false;
 
 // Google 登入
 async function doGoogleLogin() {
@@ -590,7 +636,7 @@ async function verifyWhitelist(user) {
         addedAt: firebase.firestore.FieldValue.serverTimestamp(),
         addedBy: 'system-first-user'
       });
-      showApp(user);
+      showApp(user, true);
       return;
     }
     const docRef = await db.collection(WHITELIST_COLLECTION).doc(email).get();
@@ -601,7 +647,7 @@ async function verifyWhitelist(user) {
       loading.style.display = 'none';
       return;
     }
-    showApp(user);
+    showApp(user, docRef.data().role === 'admin');
   } catch(e) {
     err.textContent = '驗證失敗：' + e.message;
     document.getElementById('loginBtn').disabled = false;
@@ -610,7 +656,9 @@ async function verifyWhitelist(user) {
 }
 
 // 顯示主應用
-function showApp(user) {
+function showApp(user, admin) {
+  currentUserEmail = user.email;
+  isAdmin = admin;
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('mainApp').style.display = 'flex';
   // 設定用戶資訊
@@ -621,17 +669,85 @@ function showApp(user) {
   else avatar.style.display = 'none';
   name.textContent = user.displayName || user.email;
   badge.style.display = 'flex';
+  // Admin 才顯示帳號管理
+  if (isAdmin) {
+    document.getElementById('navAdminSection').style.display = 'block';
+  }
 }
 
 // 登出
 async function doLogout() {
   await auth.signOut();
+  currentUserEmail = null;
+  isAdmin = false;
   document.getElementById('mainApp').style.display = 'none';
   document.getElementById('loginScreen').style.display = 'flex';
   document.getElementById('userBadge').style.display = 'none';
+  document.getElementById('navAdminSection').style.display = 'none';
   document.getElementById('loginBtn').disabled = false;
   document.getElementById('loginError').textContent = '';
   document.getElementById('loginLoading').style.display = 'none';
+}
+
+// ══════════════════════════════════════════════
+// 帳號白名單管理
+// ══════════════════════════════════════════════
+async function loadWhitelist() {
+  const tbody = document.getElementById('whitelistBody');
+  const empty = document.getElementById('whitelistEmpty');
+  tbody.innerHTML = '';
+  try {
+    const snap = await db.collection(WHITELIST_COLLECTION).orderBy('addedAt','desc').get();
+    if (snap.empty) { empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+    snap.forEach(doc => {
+      const d = doc.data();
+      const time = d.addedAt ? new Date(d.addedAt.toDate()).toLocaleString('zh-TW') : '—';
+      const roleClass = d.role === 'admin' ? 'role-admin' : 'role-user';
+      const roleText = d.role === 'admin' ? '管理員' : '一般用戶';
+      const isSelf = d.email === currentUserEmail;
+      tbody.innerHTML += `<tr>
+        <td style="font-weight:500;color:var(--t1)">${d.email}${isSelf ? ' <span style="font-size:10px;color:var(--ac)">(你)</span>' : ''}</td>
+        <td><span class="role-badge ${roleClass}">${roleText}</span></td>
+        <td style="font-size:11px">${time}</td>
+        <td>${isSelf ? '' : `<button class="btn-danger" onclick="removeWhitelistUser('${d.email}')">移除</button>`}</td>
+      </tr>`;
+    });
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--rd)">載入失敗：${e.message}</td></tr>`;
+  }
+}
+
+// 新增白名單用戶
+async function addWhitelistUser() {
+  const input = document.getElementById('addEmailInput');
+  const role = document.getElementById('addRoleSelect').value;
+  const err = document.getElementById('addEmailError');
+  const email = input.value.trim().toLowerCase();
+  err.textContent = '';
+  if (!email || !email.includes('@')) { err.textContent = '請輸入有效的 Email'; return; }
+  try {
+    const existing = await db.collection(WHITELIST_COLLECTION).doc(email).get();
+    if (existing.exists) { err.textContent = '此 Email 已在白名單中'; return; }
+    await db.collection(WHITELIST_COLLECTION).doc(email).set({
+      email, role,
+      addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      addedBy: currentUserEmail
+    });
+    input.value = '';
+    loadWhitelist();
+    showToast('已新增 ' + email);
+  } catch(e) { err.textContent = '新增失敗：' + e.message; }
+}
+
+// 移除白名單用戶
+async function removeWhitelistUser(email) {
+  if (!confirm('確定要移除 ' + email + ' 的存取權限？')) return;
+  try {
+    await db.collection(WHITELIST_COLLECTION).doc(email).delete();
+    loadWhitelist();
+    showToast('已移除 ' + email);
+  } catch(e) { alert('移除失敗：' + e.message); }
 }
 
 // 監聽登入狀態（重新整理時自動恢復）
@@ -909,7 +1025,7 @@ function switchNav(view, el) {
   currentNav = view;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   el.classList.add('active');
-  const titles = { monthly:'月度圖表', pl:'月度損益明細', annual:'年度總覽', compare:'年度比較' };
+  const titles = { monthly:'月度圖表', pl:'月度損益明細', annual:'年度總覽', compare:'年度比較', admin:'帳號管理' };
   document.getElementById('pageTitle').textContent = titles[view]||view;
   document.getElementById('viewTabs').style.display = view==='monthly'?'flex':'none';
   renderCurrentView();
@@ -925,13 +1041,15 @@ function setSubView(v, el) {
 }
 
 function renderCurrentView() {
-  ['monthly','pl','annual','compare'].forEach(v=>{
-    document.getElementById('view-'+v).style.display = v===currentNav?'block':'none';
+  ['monthly','pl','annual','compare','admin'].forEach(v=>{
+    const el = document.getElementById('view-'+v);
+    if (el) el.style.display = v===currentNav?'block':'none';
   });
   if (currentNav==='monthly') renderMonthly();
   else if (currentNav==='pl') renderPLTable();
   else if (currentNav==='annual') renderAnnual();
   else if (currentNav==='compare') renderCompare();
+  else if (currentNav==='admin') loadWhitelist();
 }
 
 // ══════════════════════════════════════════════
