@@ -360,6 +360,9 @@ body{font-family:"Noto Sans TC",sans-serif;background:var(--bg);color:var(--t1);
       <button class="btn btn-ghost" onclick="exportToExcel()">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12v1a1 1 0 001 1h8a1 1 0 001-1v-1M8 3v9M5 9l3 3 3-3"/></svg>匯出
       </button>
+      <button class="btn btn-ghost" id="adminBtn" style="display:none" onclick="switchNav('admin',document.getElementById('navAdmin'))" title="帳號管理">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="3"/><path d="M2 14c0-3 2.5-5 6-5s6 2 6 5"/></svg>帳號管理
+      </button>
       <div class="user-badge" id="userBadge" style="display:none" onclick="doLogout()">
         <img id="userAvatar" src="" alt="">
         <span id="userName"></span>
@@ -737,9 +740,10 @@ function showApp(user, admin) {
   else avatar.style.display = 'none';
   name.textContent = user.displayName || user.email;
   badge.style.display = 'flex';
-  // Admin 才顯示帳號管理
+  // Admin 才顯示帳號管理（右上角按鈕 + 左側 nav 都顯示）
   if (isAdmin) {
     document.getElementById('navAdminSection').style.display = 'block';
+    document.getElementById('adminBtn').style.display = 'inline-flex';
   }
   // 登入後從 Firestore 載入共用資料（會覆蓋初始內建資料）
   loadFromFirestore();
@@ -754,6 +758,7 @@ async function doLogout() {
   document.getElementById('loginScreen').style.display = 'flex';
   document.getElementById('userBadge').style.display = 'none';
   document.getElementById('navAdminSection').style.display = 'none';
+  document.getElementById('adminBtn').style.display = 'none';
   document.getElementById('loginBtn').disabled = false;
   document.getElementById('loginError').textContent = '';
   document.getElementById('loginLoading').style.display = 'none';
