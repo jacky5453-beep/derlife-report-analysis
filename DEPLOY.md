@@ -25,4 +25,8 @@ git add -A && git commit -m "描述" && git push origin main
 - Firestore Collection：`report-whitelist`（白名單）
 
 ## 最後部署日期
-2026-04-15
+2026-05-11
+
+## 更新紀錄
+- 2026-05-11：新增 ERP 損益表匯入支援（直接拉 ERP 下載的單月損益表 .xls 匯入，自動對照科目並補上缺漏科目；支援多檔批次匯入；公司／日期自動偵測）。後續預計搬到公司 NAS 內網版。
+- 2026-04-15：初版部署。

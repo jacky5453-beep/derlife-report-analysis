@@ -331,8 +331,8 @@ body{font-family:"Noto Sans TC",sans-serif;background:var(--bg);color:var(--t1);
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 10V2M5 5l3-3 3 3M2 12v1a1 1 0 001 1h10a1 1 0 001-1v-1"/></svg>
       <span class="co-badge c-yuan"></span>匯入緣味
     </label>
-    <input type="file" id="fi0" accept=".xlsx,.xls" style="display:none" onchange="handleFile(0,this)">
-    <input type="file" id="fi1" accept=".xlsx,.xls" style="display:none" onchange="handleFile(1,this)">
+    <input type="file" id="fi0" accept=".xlsx,.xls" multiple style="display:none" onchange="handleFile(0,this)">
+    <input type="file" id="fi1" accept=".xlsx,.xls" multiple style="display:none" onchange="handleFile(1,this)">
     <div id="navAdminSection" style="display:none">
       <div class="nav-label" style="margin-top:10px">管理</div>
       <div class="nav-item" id="navAdmin" onclick="switchNav('admin',this)">
@@ -1708,34 +1708,380 @@ function exportToExcel() {
 function closeModal(id) { document.getElementById(id).style.display='none'; }
 
 // ══════════════════════════════════════════════
-// FILE IMPORT
+// FILE IMPORT - ERP 損益表格式對照表
+// ══════════════════════════════════════════════
+// ERP 公司名 → 系統公司 index
+const COMPANY_NAME_MAP = {
+  '得來素企業有限公司': 0,
+  '緣味食品行': 1,
+};
+
+// ERP 明細科目名稱 → 系統科目名稱（明細列）
+// 值為 null = 該科目為小計/合計類，由 ERP_SUBTOTAL_MAP 處理
+const ERP_NAME_MAP = {
+  // 營業收入
+  '銷貨收入': '銷貨收入',
+  '銷貨退回': '減:銷貨退回',
+  '銷貨折讓': '減:銷貨折讓',
+  '其他營業收入': '其它營業收入',
+  '加工收入': '加工收入',
+  // 營業成本
+  '期初存貨': '商品存貨(期初)',
+  '本期進貨': '進貨',
+  '進貨退出': '減:進貨退出',
+  '進貨折讓': '減:進貨折讓',
+  '期末存貨': '減:商品存貨(期末)',
+  '商品轉入': '商品轉入',
+  // 營業費用
+  '薪資支出': '薪資支出',
+  '租金支出': '租金支出',
+  '文具用品': '文具用品',
+  '旅費': '旅費',
+  '運費': '運費',
+  '郵電費': '郵電費',
+  '修繕費': '修繕費',
+  '廣告費': '廣告費',
+  '水電瓦斯費': '水電瓦斯費',
+  '律師費': '律師費',
+  '稅捐': '稅捐',
+  '訓練費': '訓練費',
+  '勞保費': '勞保費',
+  '勞退費': '勞退費',
+  '健保費': '健保費',
+  '手續費': '手續費',
+  '交通費': '交通費',
+  '設計費': '設計費',
+  '其他營業費用': '其他費用',
+  '雜項購置': '雜項購置',
+  '服務費': '服務費',
+  '參展費': '參展費',
+  '交際費': '交際費',
+  '伙食費': '伙食費',
+  '保險費': '保險費',
+  '捐贈': '捐贈',
+  '佣金支出': '佣金支出',
+  '職工福利': '職工福利',
+  '研究費': '研究費',
+  '加盟專案費用': '加盟專案費用',
+  '勞務費': '勞務費',
+  '公會費': '公會費',
+  '燃料費': '燃料費',
+  '檢驗費': '檢驗費',
+  '排印費': '排印費',
+  '製版費': '製版費',
+  '包裝費': '包裝費',
+  '呆帳損失': '呆帳損失',
+  // 非營業收益
+  '租賃收入': '租金收入',
+  '其他非營業收入': '其他收入',
+  '專案收入': '專案收入',
+  '利息收入': '利息收入',
+  '佣金收入': '佣金收入',
+  // 非營業費用
+  '利息支出': '利息支出',
+  '其他支出': '其他支出',
+  '其他損失': '其他損失',
+};
+
+// ERP 小計列 → 系統小計 label（per schema 不同）
+const ERP_SUBTOTAL_MAP = {
+  delai: {
+    '營業收入淨額': '營收淨額',
+    '營業成本合計': '銷貨總成本',
+    '營業毛利': '營業毛利',
+    '營業費用合計': '營業費用總額',
+    '營業淨利': '營業利益',
+    '本期損益(稅後)': '本期損益',
+    '稅後損益': '本期損益',
+  },
+  yuan: {
+    '營業收入淨額': '營收淨額',
+    '營業成本合計': '營業成本',
+    '營業毛利': '營業毛利(損)總額',
+    '營業費用合計': '營業費用總額',
+    '營業淨利': '營業利益',
+    '本期損益(稅後)': '本期損益',
+    '稅後損益': '本期損益',
+  },
+};
+
+// 標籤正規化（去全形空白、半形空白、冒號）
+function normalizeLabel(s) {
+  return String(s||'').replace(/[　　\s:：]/g,'').trim();
+}
+
+// 解析 ERP 損益表（單檔 = 一家公司一個月份）
+function parseErpMonthlyPL(rows) {
+  if (!rows || rows.length < 5) return null;
+
+  // 1. 公司名（R0）
+  const r0 = String(rows[0]?.[0]||'').trim();
+  let detectedCo = -1;
+  Object.entries(COMPANY_NAME_MAP).forEach(([n, ci]) => {
+    if (r0.includes(n)) detectedCo = ci;
+  });
+
+  // 2. 日期區間 → 民國年 + 月
+  let year = null, month = null;
+  for (let i=0;i<Math.min(5, rows.length);i++) {
+    const v = String(rows[i]?.[0]||'');
+    const m = v.match(/(\d{4})\/(\d{1,2})\/\d{1,2}/);
+    if (m) {
+      year = parseInt(m[1]) - 1911; // 西元→民國
+      month = parseInt(m[2]);
+      break;
+    }
+  }
+  if (!year || !month) return null;
+
+  // 3. 找標題列「科目代號 | 科目名稱 | 借貸類別 | 科目金額 | 比率(%)」
+  let hRow = -1;
+  for (let i=0;i<Math.min(10, rows.length);i++) {
+    const r = rows[i];
+    if (r && r[0]==='科目代號' && r[1]==='科目名稱') { hRow = i; break; }
+  }
+  if (hRow < 0) return null;
+
+  // 4. 逐列解析
+  const items = []; // {code, name, section, amount}
+  const subtotals = {}; // 系統 label-friendly key → amount
+  let currentSection = null;
+
+  for (let i=hRow+1; i<rows.length; i++) {
+    const r = rows[i]; if (!r) continue;
+    const code = String(r[0]||'').trim();
+    const nameRaw = String(r[1]||'').trim();
+    if (!nameRaw) continue;
+    if (nameRaw.startsWith('---') || nameRaw.startsWith('===')) continue;
+
+    const amount = parseFloat(r[3]);
+
+    // 大區塊（■）— 「非營業」優先比對，避免被「營業費用」誤抓
+    if (nameRaw.startsWith('■')) {
+      const t = nameRaw.replace(/[■\s　]/g,'');
+      if (t.includes('非營業收益')) currentSection = 'nonOpIncome';
+      else if (t.includes('非營業費用')) currentSection = 'nonOpExpense';
+      else if (t.includes('營業收入')) currentSection = 'revenue';
+      else if (t.includes('營業成本')) currentSection = 'cost';
+      else if (t.includes('營業費用')) currentSection = 'expense';
+      else currentSection = null;
+      continue;
+    }
+
+    // 小計列：含「合計」、或為「淨額/毛利/淨利/損益」結尾
+    const clean = nameRaw.replace(/[:：]\s*$/,'').replace(/^\s+/,'');
+    if (clean.includes('合計') || clean==='營業收入淨額' || clean==='營業毛利'
+        || clean==='營業淨利' || clean==='非營業淨利' || clean==='稅前損益'
+        || clean==='稅後損益' || clean==='本期損益(稅後)') {
+      if (!isNaN(amount)) subtotals[clean] = amount;
+      continue;
+    }
+
+    // 明細：科目代號是純數字 + 金額有效
+    if (code && /^\d+$/.test(code) && !isNaN(amount)) {
+      items.push({ code, name: clean, section: currentSection, amount });
+    }
+  }
+
+  return { detectedCo, year, month, items, subtotals };
+}
+
+// 在指定 section 內插入新科目（自動加到 ERP 區塊末端，subtotal 之前）
+function insertNewItemBySection(pl, section, label, schema) {
+  const SECTION_TITLES = {
+    revenue: ['一、營業收入'],
+    cost: ['二、銷貨成本','二、營業成本'],
+    expense: ['三、營業費用'],
+    nonOpIncome: ['四、非營業收支'],
+    nonOpExpense: ['四、非營業收支'],
+  };
+  const titles = SECTION_TITLES[section];
+  if (!titles) return null;
+  let secIdx = -1;
+  for (let i=0;i<pl.length;i++) {
+    if (pl[i].type === 'section' && titles.some(t => pl[i].label === t)) { secIdx = i; break; }
+  }
+  if (secIdx < 0) return null;
+  let secEnd = pl.length;
+  for (let i=secIdx+1;i<pl.length;i++) {
+    if (pl[i].type === 'section') { secEnd = i; break; }
+  }
+  let insertAt = secIdx + 1;
+  for (let i=secIdx+1;i<secEnd;i++) {
+    if (pl[i].type === 'item' || pl[i].type === 'deduct') insertAt = i + 1;
+  }
+  const monthly = {};
+  for (let m=1;m<=12;m++) { monthly[m]=0; monthly[String(m)]=0; }
+  const indent = (section === 'revenue') ? 1 : 2;
+  const type = (section === 'nonOpExpense') ? 'deduct' : 'item';
+  const newRow = { type, label, indent, monthly, annual: 0 };
+  pl.splice(insertAt, 0, newRow);
+  return newRow;
+}
+
+// 把 ERP 解析結果寫入 pl[year] + baseData[year]
+function applyErpData(coIdx, erp) {
+  const { year, month, items, subtotals } = erp;
+  const co = companies[coIdx];
+  const added = [];
+  let unknown = 0;
+
+  if (!co.pl[year]) co.pl[year] = buildEmptyYear(coIdx, year);
+  if (!co.baseData[year]) co.baseData[year] = buildEmptyBaseYear(year);
+  const pl = co.pl[year];
+
+  // 1. 明細科目
+  items.forEach(it => {
+    const mappedName = ERP_NAME_MAP.hasOwnProperty(it.name) ? ERP_NAME_MAP[it.name] : it.name;
+    if (mappedName === null) return;
+    let row = pl.find(r => r.type !== 'section' && r.type !== 'spacer'
+                        && normalizeLabel(r.label) === normalizeLabel(mappedName));
+    if (!row) {
+      row = insertNewItemBySection(pl, it.section, mappedName, co.schema);
+      if (row) added.push(`${co.name} ${year}年 [${it.code}] ${mappedName}`);
+    }
+    if (row) {
+      // deduct 型欄位存正值（畫面上會自動以「減」呈現），其餘存原值
+      const val = (row.type === 'deduct') ? Math.abs(it.amount) : it.amount;
+      row.monthly[month] = val;
+      row.monthly[String(month)] = val;
+      let sum = 0;
+      for (let m=1;m<=12;m++) sum += (row.monthly[m] || row.monthly[String(m)] || 0);
+      row.annual = sum;
+    } else {
+      unknown++;
+    }
+  });
+
+  // 2. 小計列
+  const submap = ERP_SUBTOTAL_MAP[co.schema] || {};
+  Object.entries(subtotals).forEach(([erpName, val]) => {
+    const sysLabel = submap[erpName];
+    if (!sysLabel) return;
+    const row = pl.find(r => normalizeLabel(r.label) === normalizeLabel(sysLabel));
+    if (row && (row.type === 'subtotal' || row.type === 'total' || row.type === 'profit')) {
+      row.monthly[month] = val;
+      row.monthly[String(month)] = val;
+      let sum = 0;
+      for (let m=1;m<=12;m++) sum += (row.monthly[m] || row.monthly[String(m)] || 0);
+      row.annual = sum;
+    }
+  });
+
+  // 3. 同步 baseData 摘要指標
+  const bd = co.baseData[year];
+  const rev = subtotals['營業收入淨額'] || 0;
+  const cost = subtotals['營業成本合計'] || 0;
+  const exp = subtotals['營業費用合計'] || 0;
+  const gp = subtotals['營業毛利'] !== undefined ? subtotals['營業毛利'] : (rev - cost);
+  const np = subtotals['本期損益(稅後)'] !== undefined ? subtotals['本期損益(稅後)']
+            : (subtotals['稅後損益'] !== undefined ? subtotals['稅後損益'] : 0);
+  bd.monthly.revenue[month] = rev;
+  bd.monthly.cost[month] = cost;
+  bd.monthly.expense[month] = exp;
+  bd.monthly.grossProfit[month] = gp;
+  bd.monthly.netProfit[month] = np;
+  ['revenue','cost','expense','grossProfit','netProfit'].forEach(k => {
+    let s = 0;
+    for (let m=1;m<=12;m++) s += (bd.monthly[k][m] || 0);
+    bd.annual[k] = s;
+  });
+
+  _invalidateMerged();
+  return { added, unknown };
+}
+
+// ══════════════════════════════════════════════
+// FILE IMPORT - 主流程（支援多檔 + ERP/舊兩種格式）
 // ══════════════════════════════════════════════
 function handleFile(coIdx, input) {
-  const file=input.files[0]; if(!file)return;
-  showToast('解析中…');
-  const reader=new FileReader();
-  reader.onload=ev=>{
-    try{
-      const wb=XLSX.read(ev.target.result,{type:'array'});
-      // Basic parse for summary - add to baseData
-      wb.SheetNames.forEach(sname=>{
-        const m=sname.trim().match(/^(\d{2,3})年/);
-        if(!m)return;
-        const year=parseInt(m[1]);
-        const ws=wb.Sheets[sname];
-        const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
-        const parsed=parseSheetSimple(rows);
-        if(parsed){
-          companies[coIdx].baseData[year]=parsed;
-          if(!companies[coIdx].pl[year]) companies[coIdx].pl[year]=buildEmptyYear(coIdx,year);
-        }
-      });
-      buildYearBtns();renderCurrentView();
-      showToast('已匯入 '+file.name);
-    }catch(e){showToast('解析失敗:'+e.message,'error');}
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+  showToast(`解析 ${files.length} 個檔案中…`);
+
+  let processedMonths = 0;
+  let processedYears = 0;
+  const allAdded = [];
+  let totalUnknown = 0;
+  const errors = [];
+  const skippedByUser = [];
+
+  const finish = () => {
+    buildYearBtns();
+    renderCurrentView();
+    let msg = '匯入完成：';
+    const parts = [];
+    if (processedMonths) parts.push(`${processedMonths} 個月份`);
+    if (processedYears) parts.push(`${processedYears} 個年度（舊格式）`);
+    msg += parts.length ? parts.join('、') : '0';
+    if (allAdded.length) msg += `，新增 ${allAdded.length} 個科目`;
+    if (totalUnknown) msg += `，${totalUnknown} 筆未識別`;
+    if (skippedByUser.length) msg += `，跳過 ${skippedByUser.length} 個`;
+    showToast(msg, errors.length ? 'error' : 'success');
+    if (allAdded.length) console.log('[匯入] 新增科目:\n' + allAdded.join('\n'));
+    if (errors.length) console.warn('[匯入] 錯誤:\n' + errors.join('\n'));
+    input.value = '';
   };
-  reader.readAsArrayBuffer(file);
-  input.value='';
+
+  const processOne = (i) => {
+    if (i >= files.length) { finish(); return; }
+    const file = files[i];
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const wb = XLSX.read(ev.target.result, {type:'array'});
+
+        // 先試 ERP 格式（第一個 sheet）
+        const firstSheet = wb.Sheets[wb.SheetNames[0]];
+        const firstRows = XLSX.utils.sheet_to_json(firstSheet, {header:1, defval:null});
+        const erp = parseErpMonthlyPL(firstRows);
+
+        if (erp && erp.year && erp.month) {
+          // 公司比對防呆
+          if (erp.detectedCo >= 0 && erp.detectedCo !== coIdx) {
+            const ok = confirm(
+              `檔案「${file.name}」偵測到的公司是\n  ${companies[erp.detectedCo].name}\n` +
+              `但你選的是\n  ${companies[coIdx].name}\n\n仍要匯入到「${companies[coIdx].name}」嗎？`);
+            if (!ok) {
+              skippedByUser.push(file.name);
+              processOne(i+1); return;
+            }
+          }
+          const result = applyErpData(coIdx, erp);
+          processedMonths++;
+          if (result.added.length) allAdded.push(...result.added);
+          totalUnknown += result.unknown;
+        } else {
+          // fallback：舊格式（橫向月度）
+          let matched = 0;
+          wb.SheetNames.forEach(sname => {
+            const m = sname.trim().match(/^(\d{2,3})年/);
+            if (!m) return;
+            const year = parseInt(m[1]);
+            const ws = wb.Sheets[sname];
+            const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+            const parsed = parseSheetSimple(rows);
+            if (parsed) {
+              companies[coIdx].baseData[year] = parsed;
+              if (!companies[coIdx].pl[year]) companies[coIdx].pl[year] = buildEmptyYear(coIdx, year);
+              matched++;
+            }
+          });
+          if (matched) {
+            processedYears += matched;
+            _invalidateMerged();
+          } else {
+            errors.push(`${file.name}：無法識別格式`);
+          }
+        }
+      } catch(e) {
+        errors.push(`${file.name}：${e.message}`);
+      }
+      processOne(i+1);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  processOne(0);
 }
 
 function parseSheetSimple(rows){
