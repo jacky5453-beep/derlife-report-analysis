@@ -1849,14 +1849,73 @@ const LEGACY_SECTION_RENAME = {
   '二、銷貨成本': '二、營業成本',
 };
 
-// 把 102~114 年舊版科目名稱合併／改名成 ERP 標準名稱
+// 115+ 偵測 pl 是否為「混亂狀態」（從 114 複製而來、新舊並存）
+function isErp115Messy(pl) {
+  if (!pl || !pl.length) return false;
+  return pl.some(r => {
+    if (LEGACY_TO_ERP[r.label]) return true;
+    if (r.type === 'section' && (r.label === '二、銷貨成本' || r.label === '四、非營業收支')) return true;
+    if ((r.type === 'item' || r.type === 'deduct') && !r.code) return true; // ERP 年的明細一定要有 code
+    return false;
+  });
+}
+
+// 對 115+ 重建 schema：保留有 code 的 ERP 明細 + 把舊版小計值搬到新名
+function rebuildErp115Pl(pl, schema) {
+  const skel = buildErpYearSkeleton();
+  // 1. 有 code 的明細：以代號分區（4xxx=收入, 5xxx=成本, 6xxx=費用, 7xxx=非營收益, 8xxx=非營費用）
+  pl.filter(r => r.code).forEach(r => {
+    const code = parseInt(r.code);
+    let section = null;
+    if (code >= 4000 && code < 5000) section = 'revenue';
+    else if (code >= 5000 && code < 6000) section = 'cost';
+    else if (code >= 6000 && code < 7000) section = 'expense';
+    else if (code >= 7000 && code < 8000) section = 'nonOpIncome';
+    else if (code >= 8000 && code < 9000) section = 'nonOpExpense';
+    if (!section) return;
+    const newRow = insertNewItemBySection(skel, section, r.label, schema, r.code);
+    if (newRow) {
+      newRow.monthly = JSON.parse(JSON.stringify(r.monthly || {}));
+      newRow.annual = r.annual || 0;
+    }
+  });
+  // 2. 舊版 subtotal/profit/total 值搬到 skel 對應名稱（只在 skel 還是 0 時搬）
+  pl.forEach(r => {
+    if (r.type !== 'subtotal' && r.type !== 'profit' && r.type !== 'total') return;
+    if (!r.label) return;
+    const mig = LEGACY_TO_ERP[r.label];
+    const newLabel = mig ? mig.newName : r.label;
+    const dst = skel.find(x => x.label === newLabel);
+    if (!dst) return;
+    if (dst.type !== 'subtotal' && dst.type !== 'profit' && dst.type !== 'total') return;
+    const dstHasValue = (dst.annual || 0) !== 0 || Object.values(dst.monthly || {}).some(v => v);
+    const srcHasValue = (r.annual || 0) !== 0 || Object.values(r.monthly || {}).some(v => v);
+    if (!dstHasValue && srcHasValue) {
+      dst.monthly = JSON.parse(JSON.stringify(r.monthly || {}));
+      dst.annual = r.annual || 0;
+    }
+  });
+  return skel;
+}
+
+// 把 102~114 年舊版科目名稱合併／改名成 ERP 標準名稱，同時清理 115+ 混亂狀態
 function migrateLegacyToErpNames() {
-  let renamed = 0, merged = 0, sectionsRebuilt = 0;
+  let renamed = 0, merged = 0, sectionsRebuilt = 0, erp115Rebuilt = 0;
   for (let ci = 0; ci < companies.length; ci++) {
     const co = companies[ci];
     Object.keys(co.pl).forEach(yKey => {
       const yy = parseInt(yKey);
-      if (isNaN(yy) || yy >= ERP_VERBATIM_FROM_YEAR) return;
+      if (isNaN(yy)) return;
+
+      // 115+：偵測到混亂狀態就完整重建
+      if (yy >= ERP_VERBATIM_FROM_YEAR) {
+        if (isErp115Messy(co.pl[yKey])) {
+          co.pl[yKey] = rebuildErp115Pl(co.pl[yKey], co.schema);
+          erp115Rebuilt++;
+        }
+        return;
+      }
+
       let pl = co.pl[yKey];
 
       // 1. section 改名（二、銷貨成本 → 二、營業成本）
