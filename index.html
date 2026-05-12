@@ -633,13 +633,15 @@ async function loadFromFirestore() {
         // 載入後跑舊版科目→ERP 標準名稱遷移（idempotent，重跑無害）
         try {
           const mig = migrateLegacyToErpNames();
-          if (mig.renamed || mig.merged || mig.sectionsRebuilt) {
+          if (mig.renamed || mig.merged || mig.sectionsRebuilt || mig.erp115Rebuilt) {
             // 有實際變動才回寫 Firestore（不過 _isLoadingData 保護期間 saveToFirestore 會跳過，
             // 等下面 finally 重置後再排程一次）
             setTimeout(() => saveToFirestore(), 0);
           }
         } catch(e) { console.warn('[遷移] 跳過：', e.message); }
         _mergedCache = null;
+        // 登入後預設顯示最新年份（讓 renderPLTable 走 slice(-1) fallback）
+        plSelectedYears = [];
         if (typeof buildYearBtns === 'function') buildYearBtns();
         if (typeof renderCurrentView === 'function') renderCurrentView();
       }
@@ -1062,7 +1064,7 @@ function buildYearBtns() {
   if (!years.length) return;
   if (!currentYear || !years.includes(currentYear)) currentYear = years[years.length-1];
   if (!compareYears.length) compareYears = years.slice(-3);
-  if (!plSelectedYears.length) plSelectedYears = years.slice(-3);
+  if (!plSelectedYears.length) plSelectedYears = years.slice(-1);
 
   const container = document.getElementById('yearBtns');
   container.innerHTML = '';
@@ -1259,10 +1261,10 @@ function toggleSimpleEditMode() {
 // ══════════════════════════════════════════════
 function renderPLTable() {
   const years = getActiveYears();
-  if (!plSelectedYears.length) plSelectedYears = years.slice(-3);
+  if (!plSelectedYears.length) plSelectedYears = years.slice(-1);
   // Ensure plSelectedYears only contains valid years
   plSelectedYears = plSelectedYears.filter(y => years.includes(y));
-  if (!plSelectedYears.length) plSelectedYears = years.slice(-3);
+  if (!plSelectedYears.length) plSelectedYears = years.slice(-1);
 
   // Year picker
   document.getElementById('plYearPicker').innerHTML = years.map(y=>{
