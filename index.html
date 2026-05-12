@@ -630,6 +630,15 @@ async function loadFromFirestore() {
         }
         const yrs = Object.keys(companies[0].pl).length + Object.keys(companies[1].pl).length;
         console.log(`[載入] 從 Firestore 還原資料（${yrs} 個年度）`);
+        // 載入後跑舊版科目→ERP 標準名稱遷移（idempotent，重跑無害）
+        try {
+          const mig = migrateLegacyToErpNames();
+          if (mig.renamed || mig.merged || mig.sectionsRebuilt) {
+            // 有實際變動才回寫 Firestore（不過 _isLoadingData 保護期間 saveToFirestore 會跳過，
+            // 等下面 finally 重置後再排程一次）
+            setTimeout(() => saveToFirestore(), 0);
+          }
+        } catch(e) { console.warn('[遷移] 跳過：', e.message); }
         _mergedCache = null;
         if (typeof buildYearBtns === 'function') buildYearBtns();
         if (typeof renderCurrentView === 'function') renderCurrentView();
@@ -1810,6 +1819,116 @@ const COMPANY_NAME_MAP = {
   '得來素企業有限公司': 0,
   '緣味食品行': 1,
 };
+
+// 民國 115 年前舊版科目 → ERP 標準名稱對照（idempotent，重跑安全）
+// negate=true 代表舊版「減:xxx」存正值，搬到新名要轉負號
+const LEGACY_TO_ERP = {
+  // 明細
+  '減:銷貨退回':    { newName: '銷貨退回', negate: true },
+  '減:銷貨折讓':    { newName: '銷貨折讓', negate: true },
+  '其它營業收入':   { newName: '其他營業收入' },
+  '商品存貨(期初)': { newName: '期初存貨' },
+  '進貨':           { newName: '本期進貨' },
+  '減:進貨退出':    { newName: '進貨退出', negate: true },
+  '減:進貨折讓':    { newName: '進貨折讓', negate: true },
+  '減:商品存貨(期末)': { newName: '期末存貨', negate: true },
+  '其他費用':       { newName: '其他營業費用' },
+  '租金收入':       { newName: '租賃收入' },
+  '其他收入':       { newName: '其他非營業收入' },
+  // 小計／損益
+  '營收淨額':         { newName: '營業收入淨額' },
+  '銷貨總成本':       { newName: '營業成本合計' },
+  '營業成本':         { newName: '營業成本合計' },
+  '營業毛利(損)總額': { newName: '營業毛利' },
+  '營業費用總額':     { newName: '營業費用合計' },
+  '營業利益':         { newName: '營業淨利' },
+  '本期損益':         { newName: '本期損益(稅後)' },
+};
+
+const LEGACY_SECTION_RENAME = {
+  '二、銷貨成本': '二、營業成本',
+};
+
+// 把 102~114 年舊版科目名稱合併／改名成 ERP 標準名稱
+function migrateLegacyToErpNames() {
+  let renamed = 0, merged = 0, sectionsRebuilt = 0;
+  for (let ci = 0; ci < companies.length; ci++) {
+    const co = companies[ci];
+    Object.keys(co.pl).forEach(yKey => {
+      const yy = parseInt(yKey);
+      if (isNaN(yy) || yy >= ERP_VERBATIM_FROM_YEAR) return;
+      let pl = co.pl[yKey];
+
+      // 1. section 改名（二、銷貨成本 → 二、營業成本）
+      pl.forEach(r => {
+        if (r.type === 'section' && LEGACY_SECTION_RENAME[r.label]) {
+          r.label = LEGACY_SECTION_RENAME[r.label];
+          sectionsRebuilt++;
+        }
+      });
+
+      // 2. 修正：如果先前版本已誤拆「四、非營業收支」→ 還原成單一 section
+      const idxIncome = pl.findIndex(r => r.type === 'section' && r.label === '四、非營業收益');
+      const idxExpense = pl.findIndex(r => r.type === 'section' && r.label === '五、非營業費用');
+      if (idxIncome >= 0 && idxExpense >= 0 && idxExpense > idxIncome) {
+        // 把 idxIncome 改名為「四、非營業收支」，刪掉 idxExpense section 與其前的 spacer
+        pl[idxIncome].label = '四、非營業收支';
+        // 找 idxExpense 前面緊鄰的 spacer，一併刪除
+        const spacerIdx = (idxExpense - 1 >= 0 && pl[idxExpense - 1].type === 'spacer') ? idxExpense - 1 : -1;
+        if (spacerIdx >= 0) {
+          pl.splice(spacerIdx, 2); // 刪 spacer + section
+        } else {
+          pl.splice(idxExpense, 1);
+        }
+        sectionsRebuilt++;
+      }
+
+      // 3. 明細／小計改名 + 合併（用 while 跑因為陣列會變動）
+      let i = 0;
+      while (i < pl.length) {
+        const r = pl[i];
+        if (!r || r.type === 'section' || r.type === 'spacer') { i++; continue; }
+        const mig = LEGACY_TO_ERP[r.label];
+        if (!mig) { i++; continue; }
+        const sign = mig.negate ? -1 : 1;
+        const dst = pl.find(x => x !== r && x.label === mig.newName);
+        if (!dst) {
+          // 直接改名
+          r.label = mig.newName;
+          if (sign < 0) {
+            for (let m=1;m<=12;m++) {
+              const v = r.monthly[m] || r.monthly[String(m)] || 0;
+              r.monthly[m] = -v; r.monthly[String(m)] = -v;
+            }
+            r.annual = -(r.annual || 0);
+          }
+          if (r.type === 'deduct') r.type = 'item';
+          renamed++;
+          i++;
+        } else {
+          // 合併到 dst
+          for (let m=1;m<=12;m++) {
+            const v = r.monthly[m] || r.monthly[String(m)] || 0;
+            const dv = dst.monthly[m] || dst.monthly[String(m)] || 0;
+            dst.monthly[m] = dv + sign * v;
+            dst.monthly[String(m)] = dst.monthly[m];
+          }
+          dst.annual = (dst.annual || 0) + sign * (r.annual || 0);
+          pl.splice(i, 1); // 刪除被合併列
+          merged++;
+        }
+      }
+    });
+  }
+  if (renamed || merged || sectionsRebuilt) {
+    console.log(`[遷移] 改名 ${renamed}、合併 ${merged}、區塊重整 ${sectionsRebuilt}`);
+    _invalidateMerged && _invalidateMerged();
+  }
+  return { renamed, merged, sectionsRebuilt };
+}
+
+// 啟動時把內建資料也跑一次遷移（idempotent；Firestore 載入後會再跑一次）
+try { migrateLegacyToErpNames(); } catch(e) { console.warn('[init 遷移] 跳過：', e.message); }
 
 // 建立空白月份資料
 function emptyMonthly() {
