@@ -1778,31 +1778,40 @@ function toggleCmpYear(y){
 function exportToExcel() {
   const wb = XLSX.utils.book_new();
   const coIdxs = currentCo==='all'?[0,1]:[currentCo];
+  // 只匯出目前選擇的年份（plSelectedYears）；若沒選就匯全部
+  const selYears = (typeof plSelectedYears !== 'undefined' && plSelectedYears && plSelectedYears.length)
+    ? plSelectedYears.slice() : null;
 
+  let sheetCount = 0;
   coIdxs.forEach(ci => {
     const co = companies[ci];
-    const years = Object.keys(co.pl).map(Number).sort((a,b)=>a-b);
+    const allYears = Object.keys(co.pl).map(Number).sort((a,b)=>a-b);
+    const years = selYears ? allYears.filter(y => selYears.includes(y)) : allYears;
 
     years.forEach(y => {
       const rows = co.pl[y]; if(!rows) return;
       const dataRows = rows.filter(r=>r.type!=='section'&&r.type!=='spacer');
-      // Header
-      const header = ['會計科目','類型',...MONTHS.map(m=>y+'年'+m),'全年'];
+      // Header（加入科目代號欄；115+ 才會有值）
+      const header = ['科目代號','會計科目','類型',...MONTHS.map(m=>y+'年'+m),'全年'];
       const aoa = [header];
       dataRows.forEach(r=>{
         const vals = MONTH_NUMS.map(m=>Math.round(getMonthVal(r,m)||0));
         const ann = Math.round(getAnnualVal(r)||0);
-        aoa.push([r.label, r.type, ...vals, ann]);
+        aoa.push([r.code||'', r.label, r.type, ...vals, ann]);
       });
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       const sheetName = (co.name.replace('企業有限公司','').slice(0,3)+y+'損益').slice(0,31);
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
+      sheetCount++;
     });
   });
 
-  const fn = '財務月度損益_' + new Date().toISOString().slice(0,10) + '.xlsx';
+  if (!sheetCount) { showToast('沒有可匯出的資料（請先在「月度損益明細」選擇年份）','error'); return; }
+
+  const yrTag = selYears ? selYears.join('-') : '全部';
+  const fn = `財務月度損益_${yrTag}年_${new Date().toISOString().slice(0,10)}.xlsx`;
   XLSX.writeFile(wb, fn);
-  showToast('匯出：'+fn);
+  showToast(`匯出 ${sheetCount} 張 sheet：${fn}`);
 }
 
 function closeModal(id) { document.getElementById(id).style.display='none'; }
@@ -1979,11 +1988,39 @@ function migrateLegacyToErpNames() {
       }
     });
   }
-  if (renamed || merged || sectionsRebuilt) {
-    console.log(`[遷移] 改名 ${renamed}、合併 ${merged}、區塊重整 ${sectionsRebuilt}`);
+  if (renamed || merged || sectionsRebuilt || erp115Rebuilt) {
+    console.log(`[遷移] 改名 ${renamed}、合併 ${merged}、區塊重整 ${sectionsRebuilt}、115+ 重建 ${erp115Rebuilt}`);
     _invalidateMerged && _invalidateMerged();
   }
-  return { renamed, merged, sectionsRebuilt };
+  // 順手把 115+ 各 section 內帶 code 的明細依代號排序
+  sortErpItemsByCode();
+  return { renamed, merged, sectionsRebuilt, erp115Rebuilt };
+}
+
+// 對 115+ 的各 section（從 section 到下一個 section/spacer 為止）內帶 code 的明細依代號排序
+function sortErpItemsByCode() {
+  for (let ci = 0; ci < companies.length; ci++) {
+    const co = companies[ci];
+    Object.keys(co.pl).forEach(yKey => {
+      const yy = parseInt(yKey);
+      if (isNaN(yy) || yy < ERP_VERBATIM_FROM_YEAR) return;
+      const pl = co.pl[yKey];
+      for (let i = 0; i < pl.length; i++) {
+        if (pl[i].type !== 'section') continue;
+        // section 範圍：到下一個 section 或 spacer 為止（subtotal/profit 算在 section 內）
+        let end = pl.length;
+        for (let j = i + 1; j < pl.length; j++) {
+          if (pl[j].type === 'section' || pl[j].type === 'spacer') { end = j; break; }
+        }
+        const slice = pl.slice(i + 1, end);
+        const coded = slice.filter(r => (r.type === 'item' || r.type === 'deduct') && r.code);
+        if (coded.length <= 1) continue;
+        const others = slice.filter(r => !((r.type === 'item' || r.type === 'deduct') && r.code));
+        coded.sort((a, b) => parseInt(a.code) - parseInt(b.code));
+        pl.splice(i + 1, end - (i + 1), ...coded, ...others);
+      }
+    });
+  }
 }
 
 // 啟動時把內建資料也跑一次遷移（idempotent；Firestore 載入後會再跑一次）
@@ -2339,6 +2376,8 @@ function applyErpData(coIdx, erp) {
     bd.annual[k] = s;
   });
 
+  // ERP 匯入完把該 section 內依代號排序（避免 11502 多出 6111/6119/7107 等附在後面）
+  if (typeof sortErpItemsByCode === 'function') sortErpItemsByCode();
   _invalidateMerged();
   return { added, unknown };
 }
