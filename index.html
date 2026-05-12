@@ -640,8 +640,10 @@ async function loadFromFirestore() {
           }
         } catch(e) { console.warn('[遷移] 跳過：', e.message); }
         _mergedCache = null;
-        // 登入後預設顯示最新年份（讓 renderPLTable 走 slice(-1) fallback）
+        // 登入後預設顯示最新年份：清空 plSelectedYears + currentYear，
+        // 讓 buildYearBtns / renderPLTable 走 fallback 取最新一年
         plSelectedYears = [];
+        currentYear = null;
         if (typeof buildYearBtns === 'function') buildYearBtns();
         if (typeof renderCurrentView === 'function') renderCurrentView();
       }
@@ -1073,7 +1075,7 @@ function buildYearBtns() {
 
   years.forEach(y => {
     const wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;align-items:center;gap:2px;margin-bottom:1px';
+    wrap.style.cssText = 'display:flex;align-items:center;gap:2px;margin-bottom:1px;position:relative';
 
     const btn = document.createElement('button');
     btn.className = 'year-btn' + (y===currentYear?' active':'');
@@ -1087,13 +1089,15 @@ function buildYearBtns() {
     };
     wrap.appendChild(btn);
 
-    // 只有新增的（非內建）年度才顯示刪除按鈕
+    // 只有非內建年度顯示刪除鈕；改成 hover wrap 才顯示，避免誤觸
     const delCoIdx = coIdxs.find(ci => !isBuiltinYear(ci, y) && companies[ci] && companies[ci].pl[y]);
     if (delCoIdx !== undefined) {
       const del = document.createElement('button');
       del.textContent = '✕';
       del.title = '刪除此年度';
-      del.style.cssText = 'width:18px;height:18px;border:none;background:transparent;color:var(--t3);cursor:pointer;border-radius:4px;font-size:11px;flex-shrink:0;line-height:1;padding:0';
+      del.style.cssText = 'width:18px;height:18px;border:none;background:transparent;color:var(--t3);cursor:pointer;border-radius:4px;font-size:11px;flex-shrink:0;line-height:1;padding:0;opacity:0;transition:opacity .15s';
+      wrap.onmouseenter = () => { del.style.opacity = '1'; };
+      wrap.onmouseleave = () => { del.style.opacity = '0'; };
       del.onmouseover = () => { del.style.color='var(--rd)'; del.style.background='rgba(220,38,38,.1)'; };
       del.onmouseout  = () => { del.style.color='var(--t3)'; del.style.background='transparent'; };
       del.onclick = (e) => { e.stopPropagation(); deleteYear(delCoIdx, y); };
