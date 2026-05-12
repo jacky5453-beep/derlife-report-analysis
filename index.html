@@ -1273,7 +1273,7 @@ function renderPLTable() {
   const colsPerYear  = 12 * colsPerMonth + 1 + (plShowPct ? 1 : 0); // months*cols + annual + annual%
 
   // Year group row
-  thead += '<tr class="yr-header"><th>會計科目</th>';
+  thead += '<tr class="yr-header"><th>科目代號</th><th>會計科目</th>';
   coIdxs.forEach(ci => {
     plSelectedYears.forEach(y => {
       const coLabel = currentCo==='all' ? companies[ci].name.replace('企業有限公司','')+'·' : '';
@@ -1284,7 +1284,7 @@ function renderPLTable() {
   thead += '</tr>';
 
   // Month sub-header
-  thead += '<tr><th style="position:sticky;left:0;z-index:6;background:#f0f2f8;text-align:left;padding:6px 10px;font-size:10px;color:var(--t2);letter-spacing:.06em">會計科目</th>';
+  thead += '<tr><th style="background:#f0f2f8;text-align:left;padding:6px 8px;font-size:10px;color:var(--t2);letter-spacing:.06em">科目代號</th><th style="position:sticky;left:0;z-index:6;background:#f0f2f8;text-align:left;padding:6px 10px;font-size:10px;color:var(--t2);letter-spacing:.06em">會計科目</th>';
   coIdxs.forEach(ci => {
     plSelectedYears.forEach(y => {
       MONTH_NUMS.forEach(m => {
@@ -1321,7 +1321,7 @@ function renderPLTable() {
   schemaRows.forEach((schRow) => {
     if (schRow.type === 'spacer') {
       const cells = coIdxs.length * plSelectedYears.length * colsPerYear;
-      tbody += `<tr class="row-spacer"><td></td>${'<td></td>'.repeat(cells)}</tr>`;
+      tbody += `<tr class="row-spacer"><td></td><td></td>${'<td></td>'.repeat(cells)}</tr>`;
       return;
     }
     if (schRow.type === 'section') {
@@ -1332,6 +1332,7 @@ function renderPLTable() {
     const trCls = `row-${schRow.type}`;
     const indent = schRow.indent===2?28:schRow.indent===1?14:6;
     tbody += `<tr class="${trCls}">`;
+    tbody += `<td style="padding:4px 8px;color:var(--t2);font-family:'DM Mono',monospace;font-size:11px;text-align:center">${schRow.code||''}</td>`;
     tbody += `<td style="padding-left:${indent}px">${schRow.label}</td>`;
 
     const canEdit = plEditMode && !['subtotal','total','profit','section','spacer'].includes(schRow.type);
@@ -1459,13 +1460,18 @@ function recalcDerived(coIdx, year) {
   }
   // Invalidate merged cache so合併 view picks up new values
   _invalidateMerged();
-  // Sync base data for chart compatibility
+  // Sync base data for chart compatibility（同時支援 114 舊標籤與 115+ ERP 標籤）
   const baseD = companies[coIdx].baseData[year];
   if (baseD) {
-    const revRow = rows.find(r=>r.label==='營收淨額');
-    const costRow = rows.find(r=>r.label==='銷貨總成本')||rows.find(r=>r.label==='營業成本');
-    const expRow = rows.find(r=>r.label==='營業費用總額');
-    const npRow = rows.find(r=>r.label==='本期損益');
+    const revRow = rows.find(r=>r.label==='營收淨額')
+                 || rows.find(r=>r.label==='營業收入淨額');
+    const costRow = rows.find(r=>r.label==='銷貨總成本')
+                  || rows.find(r=>r.label==='營業成本')
+                  || rows.find(r=>r.label==='營業成本合計');
+    const expRow = rows.find(r=>r.label==='營業費用總額')
+                 || rows.find(r=>r.label==='營業費用合計');
+    const npRow = rows.find(r=>r.label==='本期損益')
+                || rows.find(r=>r.label==='本期損益(稅後)');
     if(revRow) {
       for(let m=1;m<=12;m++) { baseD.monthly.revenue[m]=getMonthVal(revRow,m)||0; }
       baseD.annual.revenue=getAnnualVal(revRow)||0;
@@ -1546,8 +1552,12 @@ function doAddMonth() {
 }
 
 function buildEmptyYear(coIdx, year) {
-  // Clone schema from nearest existing year
-  const existingYears = Object.keys(companies[coIdx].pl).map(Number).sort((a,b)=>a-b);
+  // 民國 115 年起一律用 ERP 骨架（明細由 ERP 匯入填入）
+  if (year >= ERP_VERBATIM_FROM_YEAR) return buildErpYearSkeleton();
+  // 其它年度沿用既有 schema：複製最近一個既有年度的結構
+  const existingYears = Object.keys(companies[coIdx].pl).map(Number)
+    .filter(y => y < ERP_VERBATIM_FROM_YEAR)
+    .sort((a,b)=>a-b);
   const refYear = existingYears[existingYears.length-1];
   const refRows = companies[coIdx].pl[refYear] || [];
   return refRows.map(r => {
@@ -1791,11 +1801,49 @@ function closeModal(id) { document.getElementById(id).style.display='none'; }
 // ══════════════════════════════════════════════
 // FILE IMPORT - ERP 損益表格式對照表
 // ══════════════════════════════════════════════
+// 民國 115 年（西元 2026）起，損益表科目代號與名稱完全依照 ERP 匯入檔呈現
+// 114 年以前沿用既有科目對照（保留歷史資料完整性）
+const ERP_VERBATIM_FROM_YEAR = 115;
+
 // ERP 公司名 → 系統公司 index
 const COMPANY_NAME_MAP = {
   '得來素企業有限公司': 0,
   '緣味食品行': 1,
 };
+
+// 建立空白月份資料
+function emptyMonthly() {
+  const m = {};
+  for (let i=1;i<=12;i++) { m[i]=0; m[String(i)]=0; }
+  return m;
+}
+
+// 民國 115+ 損益表骨架（只有結構列，明細由 ERP 匯入填入並依檔案順序排列）
+function buildErpYearSkeleton() {
+  return [
+    {type:'section', label:'一、營業收入'},
+    {type:'subtotal', label:'營業收入合計', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'subtotal', label:'營業收入淨額', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'spacer'},
+    {type:'section', label:'二、營業成本'},
+    {type:'subtotal', label:'營業成本合計', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'profit', label:'營業毛利', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'spacer'},
+    {type:'section', label:'三、營業費用'},
+    {type:'subtotal', label:'營業費用合計', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'profit', label:'營業淨利', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'spacer'},
+    {type:'section', label:'四、非營業收益'},
+    {type:'subtotal', label:'非營業收益合計', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'spacer'},
+    {type:'section', label:'五、非營業費用'},
+    {type:'subtotal', label:'非營業費用合計', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'profit', label:'非營業淨利', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'spacer'},
+    {type:'total', label:'稅前損益', indent:0, monthly:emptyMonthly(), annual:0},
+    {type:'profit', label:'本期損益(稅後)', indent:0, monthly:emptyMonthly(), annual:0},
+  ];
+}
 
 // ERP 明細科目名稱 → 系統科目名稱（明細列）
 // 值為 null = 該科目為小計/合計類，由 ERP_SUBTOTAL_MAP 處理
@@ -1864,7 +1912,7 @@ const ERP_NAME_MAP = {
   '其他損失': '其他損失',
 };
 
-// ERP 小計列 → 系統小計 label（per schema 不同）
+// ERP 小計列 → 系統小計 label（per schema 不同；用於 114 以前舊版）
 const ERP_SUBTOTAL_MAP = {
   delai: {
     '營業收入淨額': '營收淨額',
@@ -1884,6 +1932,22 @@ const ERP_SUBTOTAL_MAP = {
     '本期損益(稅後)': '本期損益',
     '稅後損益': '本期損益',
   },
+};
+
+// 民國 115 年起 ERP 小計列 → 骨架小計 label（兩家公司共用，name verbatim）
+const ERP_SUBTOTAL_MAP_VERBATIM = {
+  '營業收入合計': '營業收入合計',
+  '營業收入淨額': '營業收入淨額',
+  '營業成本合計': '營業成本合計',
+  '營業毛利': '營業毛利',
+  '營業費用合計': '營業費用合計',
+  '營業淨利': '營業淨利',
+  '非營業收益合計': '非營業收益合計',
+  '非營業費用合計': '非營業費用合計',
+  '非營業淨利': '非營業淨利',
+  '稅前損益': '稅前損益',
+  '稅後損益': '本期損益(稅後)',
+  '本期損益(稅後)': '本期損益(稅後)',
 };
 
 // 標籤正規化（去全形空白、半形空白、冒號）
@@ -1968,13 +2032,13 @@ function parseErpMonthlyPL(rows) {
 }
 
 // 在指定 section 內插入新科目（自動加到 ERP 區塊末端，subtotal 之前）
-function insertNewItemBySection(pl, section, label, schema) {
+function insertNewItemBySection(pl, section, label, schema, code) {
   const SECTION_TITLES = {
     revenue: ['一、營業收入'],
     cost: ['二、銷貨成本','二、營業成本'],
     expense: ['三、營業費用'],
-    nonOpIncome: ['四、非營業收支'],
-    nonOpExpense: ['四、非營業收支'],
+    nonOpIncome: ['四、非營業收支', '四、非營業收益'],
+    nonOpExpense: ['四、非營業收支', '五、非營業費用'],
   };
   const titles = SECTION_TITLES[section];
   if (!titles) return null;
@@ -1994,8 +2058,10 @@ function insertNewItemBySection(pl, section, label, schema) {
   const monthly = {};
   for (let m=1;m<=12;m++) { monthly[m]=0; monthly[String(m)]=0; }
   const indent = (section === 'revenue') ? 1 : 2;
-  const type = (section === 'nonOpExpense') ? 'deduct' : 'item';
+  // 115+（帶 code）統一用 item，名稱與正負號照 ERP；舊版才區分 deduct
+  const type = (!code && section === 'nonOpExpense') ? 'deduct' : 'item';
   const newRow = { type, label, indent, monthly, annual: 0 };
+  if (code) newRow.code = String(code);
   pl.splice(insertAt, 0, newRow);
   return newRow;
 }
@@ -2007,23 +2073,50 @@ function applyErpData(coIdx, erp) {
   const added = [];
   let unknown = 0;
 
-  if (!co.pl[year]) co.pl[year] = buildEmptyYear(coIdx, year);
+  // 民國 115 年起：完全照 ERP 名稱 + 代號，骨架重建
+  const erpVerbatim = year >= ERP_VERBATIM_FROM_YEAR;
+
+  if (!co.pl[year]) {
+    co.pl[year] = erpVerbatim ? buildErpYearSkeleton() : buildEmptyYear(coIdx, year);
+  }
   if (!co.baseData[year]) co.baseData[year] = buildEmptyBaseYear(year);
   const pl = co.pl[year];
 
   // 1. 明細科目
   items.forEach(it => {
-    const mappedName = ERP_NAME_MAP.hasOwnProperty(it.name) ? ERP_NAME_MAP[it.name] : it.name;
+    // 115+ 使用 ERP 名稱原樣；114 以前沿用 ERP_NAME_MAP
+    const mappedName = erpVerbatim
+      ? it.name
+      : (ERP_NAME_MAP.hasOwnProperty(it.name) ? ERP_NAME_MAP[it.name] : it.name);
     if (mappedName === null) return;
-    let row = pl.find(r => r.type !== 'section' && r.type !== 'spacer'
+
+    // 115+ 比對含代號（避免不同 ERP 代號的同名科目衝突）；其它沿用 label 比對
+    let row;
+    if (erpVerbatim) {
+      row = pl.find(r => r.type !== 'section' && r.type !== 'spacer'
+                      && r.code === String(it.code));
+      if (!row) {
+        row = pl.find(r => r.type !== 'section' && r.type !== 'spacer'
+                        && !r.code
                         && normalizeLabel(r.label) === normalizeLabel(mappedName));
-    if (!row) {
-      row = insertNewItemBySection(pl, it.section, mappedName, co.schema);
-      if (row) added.push(`${co.name} ${year}年 [${it.code}] ${mappedName}`);
+      }
+    } else {
+      row = pl.find(r => r.type !== 'section' && r.type !== 'spacer'
+                      && normalizeLabel(r.label) === normalizeLabel(mappedName));
     }
+
+    if (!row) {
+      row = insertNewItemBySection(pl, it.section, mappedName, co.schema, erpVerbatim ? it.code : null);
+      if (row) added.push(`${co.name} ${year}年 [${it.code}] ${mappedName}`);
+    } else if (erpVerbatim) {
+      // 既有列補上代號 / 名稱（以 ERP 為準）
+      if (!row.code) row.code = String(it.code);
+      if (row.label !== mappedName) row.label = mappedName;
+    }
+
     if (row) {
-      // deduct 型欄位存正值（畫面上會自動以「減」呈現），其餘存原值
-      const val = (row.type === 'deduct') ? Math.abs(it.amount) : it.amount;
+      // 115+ 直接存 ERP 原值（含正負號）；舊版 deduct 存絕對值
+      const val = (!erpVerbatim && row.type === 'deduct') ? Math.abs(it.amount) : it.amount;
       row.monthly[month] = val;
       row.monthly[String(month)] = val;
       let sum = 0;
@@ -2035,7 +2128,7 @@ function applyErpData(coIdx, erp) {
   });
 
   // 2. 小計列
-  const submap = ERP_SUBTOTAL_MAP[co.schema] || {};
+  const submap = erpVerbatim ? ERP_SUBTOTAL_MAP_VERBATIM : (ERP_SUBTOTAL_MAP[co.schema] || {});
   Object.entries(subtotals).forEach(([erpName, val]) => {
     const sysLabel = submap[erpName];
     if (!sysLabel) return;
