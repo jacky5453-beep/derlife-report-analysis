@@ -1323,12 +1323,14 @@ function renderPLTable() {
   const schemaRows = companies[refCoIdx]?.pl[refYear] || [];
 
   // Find monthly revenue for % calculation per month
+  // 115+ 改成 ERP 格式（營業收入淨額），114 以前是「營收淨額」，兩個都支援
   const getMonthRevMap = (ci, y) => {
     const rows = companies[ci]?.pl[y] || [];
-    const revRow = rows.find(r => r.label === '營收淨額');
+    const revRow = rows.find(r => r.label === '營業收入淨額')
+                || rows.find(r => r.label === '營收淨額');
     const map = {};
     MONTH_NUMS.forEach(m => { map[m] = revRow ? (getMonthVal(revRow, m)||0) : 0; });
-    map['annual'] = revRow ? (getAnnualVal(revRow)||1) : 1;
+    map['annual'] = revRow ? (getAnnualVal(revRow)||0) : 0;
     return map;
   };
 
@@ -1371,9 +1373,8 @@ function renderPLTable() {
           }
           // % cell (if enabled)
           if (plShowPct) {
-            const mRev = revMap[m] || 1;
-            const pct = v && mRev ? (v/mRev*100) : 0;
-            const pctTxt = v && mRev ? pct.toFixed(1)+'%' : '—';
+            const mRev = revMap[m];
+            const pctTxt = v && mRev ? (v/mRev*100).toFixed(1)+'%' : '—';
             tbody += `<td class="pct-col" style="border-left:none;padding:4px 3px;font-size:10px">${pctTxt}</td>`;
           }
         });
